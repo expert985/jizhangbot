@@ -108,6 +108,24 @@ class BookkeepingBot:
             self.query_usdt_price
         ))
 
+        # 申请试用
+        self.app.add_handler(MessageHandler(
+            filters.TEXT & filters.Regex(r'^申请试用$'),
+            self.apply_trial
+        ))
+
+        # 中文授权命令
+        self.app.add_handler(MessageHandler(
+            filters.TEXT & filters.Regex(r'^授权\s+\d+\s+\d+天$'),
+            self.authorize_chinese
+        ))
+
+        # 中文查询会员命令
+        self.app.add_handler(MessageHandler(
+            filters.TEXT & filters.Regex(r'^会员到期时间\s+\d+$'),
+            self.check_membership_chinese
+        ))
+
         # 回调查询处理
         self.app.add_handler(CallbackQueryHandler(self.button_callback))
 
@@ -136,10 +154,18 @@ class BookkeepingBot:
             membership_status = "❌ 未开通会员"
 
         # 第一行：会员相关
-        keyboard.append([
-            InlineKeyboardButton("💎 购买会员", callback_data="buy_membership"),
-            InlineKeyboardButton("👤 我的信息", callback_data="my_info")
-        ])
+        if not is_member:
+            # 未开通会员，显示申请试用
+            keyboard.append([
+                InlineKeyboardButton("🎁 申请试用", callback_data="apply_trial_btn"),
+                InlineKeyboardButton("💎 购买会员", callback_data="buy_membership")
+            ])
+        else:
+            # 已开通会员
+            keyboard.append([
+                InlineKeyboardButton("💎 续费会员", callback_data="buy_membership"),
+                InlineKeyboardButton("👤 我的信息", callback_data="my_info")
+            ])
 
         # 第二行：功能按钮
         keyboard.append([
@@ -370,6 +396,131 @@ y0 - 英镑价格
                 f"📊 状态：❌ 未开通会员"
             )
 
+    async def apply_trial(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """申请试用"""
+        user = update.effective_user
+
+        # 创建或获取用户
+        db_user = await db.get_or_create_user(
+            telegram_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name
+        )
+
+        # 给用户发送确认消息
+        await update.message.reply_text(
+            "✅ 您的试用申请已提交\n\n"
+            "请耐心等待管理员审核\n"
+            "审核通过后将自动通知您"
+        )
+
+        # 通知所有管理员
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await self.app.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"📋 申请试用\n"
+                         f"用户ID：{user.id}\n"
+                         f"用户名：{user.username or '无'}\n"
+                         f"用户名称：{user.first_name or ''}{' ' + user.last_name if user.last_name else ''}\n\n"
+                         f"💡 授权命令：\n"
+                         f"授权 {user.id} 天数"
+                )
+            except Exception as e:
+                logger.error(f"通知管理员失败: {e}")
+
+    async def authorize_chinese(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """中文授权命令：授权 用户ID 天数"""
+        user = update.effective_user
+        db_user = await db.get_user_by_telegram_id(user.id)
+
+        if not db_user or not db_user.is_admin:
+            await update.message.reply_text("❌ 此命令仅限管理员使用")
+            return
+
+        # 解析命令
+        text = update.message.text
+        match = re.match(r'^授权\s+(\d+)\s+(\d+)天$', text)
+        if not match:
+            await update.message.reply_text("❌ 命令格式错误\n\n使用格式：授权 用户ID 天数\n例如：授权 123456789 30天")
+            return
+
+        target_id = int(match.group(1))
+        days = int(match.group(2))
+
+        # 查找目标用户
+        target_user = await db.get_user_by_telegram_id(target_id)
+
+        if not target_user:
+            await update.message.reply_text("❌ 未找到该用户，用户需要先启动机器人")
+            return
+
+        # 延长会员时间
+        await db.extend_membership(target_user.id, days)
+
+        # 重新获取用户信息
+        target_user = await db.get_user_by_telegram_id(target_user.telegram_id)
+
+        expires_str = target_user.membership_expires_at.strftime('%Y-%m-%d %H:%M:%S')
+        days_left = target_user.get_membership_days_left()
+
+        # 给管理员发送确认消息
+        await update.message.reply_text(
+            f"✅ 已成功授权用户 {target_user.first_name or target_user.username or target_user.telegram_id} ({target_user.telegram_id}) {days}天\n"
+            f"到期时间: {expires_str}"
+        )
+
+        # 通知被授权用户
+        try:
+            await self.app.bot.send_message(
+                chat_id=target_user.telegram_id,
+                text=f"🎉 管理员已为您授权使用 {days}天\n"
+                     f"到期时间: {expires_str}\n\n"
+                     f"立即发送 /start 开始使用"
+            )
+        except Exception as e:
+            logger.error(f"通知用户失败: {e}")
+
+    async def check_membership_chinese(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """中文查询会员命令：会员到期时间 用户ID"""
+        user = update.effective_user
+        db_user = await db.get_user_by_telegram_id(user.id)
+
+        if not db_user or not db_user.is_admin:
+            await update.message.reply_text("❌ 此命令仅限管理员使用")
+            return
+
+        # 解析命令
+        text = update.message.text
+        match = re.match(r'^会员到期时间\s+(\d+)$', text)
+        if not match:
+            await update.message.reply_text("❌ 命令格式错误\n\n使用格式：会员到期时间 用户ID\n例如：会员到期时间 123456789")
+            return
+
+        target_id = int(match.group(1))
+
+        # 查找目标用户
+        target_user = await db.get_user_by_telegram_id(target_id)
+
+        if not target_user:
+            await update.message.reply_text("❌ 未找到该用户")
+            return
+
+        if target_user.membership_expires_at:
+            expires_str = target_user.membership_expires_at.strftime('%Y-%m-%d %H:%M:%S')
+            days_left = target_user.get_membership_days_left()
+            hours_left = int((target_user.membership_expires_at - datetime.now()).total_seconds() / 3600) % 24
+
+            await update.message.reply_text(
+                f"✅ 用户 {target_user.first_name or target_user.username or target_user.telegram_id} ({target_user.telegram_id}) 的授权到期时间: {expires_str}\n"
+                f"剩余时间: {days_left}天{hours_left}小时"
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ 用户 {target_user.first_name or target_user.username or target_user.telegram_id} ({target_user.telegram_id}) 未开通会员"
+            )
+
     async def buy_membership_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """购买会员命令"""
         user, _, _, _, _ = await self.check_permission(update)
@@ -442,7 +593,10 @@ y0 - 英镑价格
         user = query.from_user
 
         # 主菜单按钮
-        if data == "buy_membership":
+        if data == "apply_trial_btn":
+            await self._handle_apply_trial(query, user)
+            return
+        elif data == "buy_membership":
             await self._show_buy_membership(query, user)
             return
         elif data == "my_info":
@@ -851,6 +1005,42 @@ y0 - 英镑价格
 
     # ========== 按钮回调辅助函数 ==========
 
+    async def _handle_apply_trial(self, query, user):
+        """处理申请试用按钮"""
+        # 创建或获取用户
+        db_user = await db.get_or_create_user(
+            telegram_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name
+        )
+
+        keyboard = [[InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # 给用户发送确认消息
+        await query.edit_message_text(
+            "✅ 您的试用申请已提交\n\n"
+            "请耐心等待管理员审核\n"
+            "审核通过后将自动通知您",
+            reply_markup=reply_markup
+        )
+
+        # 通知所有管理员
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await self.app.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"📋 申请试用\n"
+                         f"用户ID：{user.id}\n"
+                         f"用户名：{user.username or '无'}\n"
+                         f"用户名称：{user.first_name or ''}{' ' + user.last_name if user.last_name else ''}\n\n"
+                         f"💡 授权命令：\n"
+                         f"授权 {user.id} 天数"
+                )
+            except Exception as e:
+                logger.error(f"通知管理员失败: {e}")
+
     async def _show_buy_membership(self, query, user):
         """显示购买会员界面"""
         keyboard = [
@@ -1009,11 +1199,21 @@ t0/e0/p0/y0 - 泰铢/欧元/比索/英镑
         else:
             membership_status = "❌ 未开通会员"
 
-        keyboard.append([
-            InlineKeyboardButton("💎 购买会员", callback_data="buy_membership"),
-            InlineKeyboardButton("👤 我的信息", callback_data="my_info")
-        ])
+        # 第一行：会员相关
+        if not is_member:
+            # 未开通会员，显示申请试用
+            keyboard.append([
+                InlineKeyboardButton("🎁 申请试用", callback_data="apply_trial_btn"),
+                InlineKeyboardButton("💎 购买会员", callback_data="buy_membership")
+            ])
+        else:
+            # 已开通会员
+            keyboard.append([
+                InlineKeyboardButton("💎 续费会员", callback_data="buy_membership"),
+                InlineKeyboardButton("👤 我的信息", callback_data="my_info")
+            ])
 
+        # 第二行：功能按钮
         keyboard.append([
             InlineKeyboardButton("📖 使用教程", callback_data="tutorial"),
             InlineKeyboardButton("📊 查看统计", callback_data="view_stats")
