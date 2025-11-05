@@ -35,9 +35,11 @@ class BookkeepingBot:
         """设置命令处理器"""
         # 基础命令
         self.app.add_handler(CommandHandler("start", self.start_command))
+        self.app.add_handler(CommandHandler("menu", self.menu_command))
         self.app.add_handler(CommandHandler("help", self.help_command))
 
         # 管理员命令
+        self.app.add_handler(CommandHandler("admin", self.admin_panel))
         self.app.add_handler(CommandHandler("authorize", self.authorize_command))
         self.app.add_handler(CommandHandler("membership", self.check_membership_command))
 
@@ -114,46 +116,72 @@ class BookkeepingBot:
         user = update.effective_user
 
         # 创建或获取用户
-        await db.get_or_create_user(
+        db_user = await db.get_or_create_user(
             telegram_id=user.id,
             username=user.username,
             first_name=user.first_name,
             last_name=user.last_name
         )
 
-        welcome_text = """
-🎉 欢迎使用记账机器人！
+        # 检查会员状态
+        is_member = db_user.is_member_active() or db_user.is_admin
+        days_left = db_user.get_membership_days_left()
 
-📝 基础记账：
-• 入款：+100 或 入款100 或 上行100
-• 出款：-100 或 出款100 或 下发100
-• 余额调整：余额+100 或 余额-100
-• USDT记账：金额后加u，如 +100u
+        # 构建主菜单按钮
+        keyboard = []
 
-💰 USDT价格查询：
-• z0 - 支付宝价格
-• w0 - 微信价格
-• b0/k0 - 银行卡价格
+        if is_member:
+            membership_status = f"✅ 会员有效 (剩余{days_left}天)" if days_left > 0 else "✅ 永久会员"
+        else:
+            membership_status = "❌ 未开通会员"
 
-📊 查询统计：
-• 发送"查"或"c"查看记账统计
+        # 第一行：会员相关
+        keyboard.append([
+            InlineKeyboardButton("💎 购买会员", callback_data="buy_membership"),
+            InlineKeyboardButton("👤 我的信息", callback_data="my_info")
+        ])
 
-⚙️ 群组设置（需操作员权限）：
-• 设置汇率 7.2
-• 设置费率 0.01
-• 设置币种 CNY
-• 设置商户号 12345
+        # 第二行：功能按钮
+        keyboard.append([
+            InlineKeyboardButton("📖 使用教程", callback_data="tutorial"),
+            InlineKeyboardButton("📊 查看统计", callback_data="view_stats")
+        ])
 
-🧮 计算器：
-• 直接发送算式：100*7.2+50
+        # 第三行：Web服务
+        keyboard.append([
+            InlineKeyboardButton("🌐 Web账单查询", url=f"http://{config.WEBHOOK_HOST}:52000"),
+            InlineKeyboardButton("🎛️ 管理后台", url=f"http://{config.WEBHOOK_HOST}:38888")
+        ])
 
-💎 会员功能：
-• /buy - 购买会员
-• 授权后可在多个群使用
+        # 如果是管理员，添加管理面板
+        if db_user.is_admin:
+            keyboard.append([
+                InlineKeyboardButton("⚙️ 管理员面板", callback_data="admin_panel")
+            ])
 
-使用 /help 查看详细帮助
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        welcome_text = f"""
+🎉 欢迎使用智能记账机器人！
+
+👤 用户：{user.first_name} (@{user.username or user.id})
+💎 会员状态：{membership_status}
+
+📝 快速记账：
+• 入款：+100 或 入款100
+• 出款：-100 或 出款100
+• 余额：余额+100
+• USDT：+100u
+
+📊 查看统计：发送"查"或"c"
+
+💡 点击下方按钮探索更多功能
 """
-        await update.message.reply_text(welcome_text)
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+
+    async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """显示主菜单"""
+        await self.start_command(update, context)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理 /help 命令"""
@@ -373,14 +401,88 @@ y0 - 英镑价格
             reply_markup=reply_markup
         )
 
+    async def admin_panel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """管理员面板命令"""
+        user = update.effective_user
+        db_user = await db.get_user_by_telegram_id(user.id)
+
+        if not db_user or not db_user.is_admin:
+            await update.message.reply_text("❌ 此功能仅限管理员使用")
+            return
+
+        keyboard = [
+            [
+                InlineKeyboardButton("👥 用户列表", callback_data="admin_users"),
+                InlineKeyboardButton("💎 授权会员", callback_data="admin_authorize")
+            ],
+            [
+                InlineKeyboardButton("🏢 群组列表", callback_data="admin_groups"),
+                InlineKeyboardButton("📊 统计数据", callback_data="admin_stats")
+            ],
+            [
+                InlineKeyboardButton("💰 支付记录", callback_data="admin_payments"),
+                InlineKeyboardButton("⚙️ 系统设置", callback_data="admin_settings")
+            ],
+            [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(
+            "⚙️ 管理员控制面板\n\n"
+            "请选择要执行的操作：",
+            reply_markup=reply_markup
+        )
+
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理按钮回调"""
         query = update.callback_query
         await query.answer()
 
         data = query.data
+        user = query.from_user
 
-        if data.startswith('buy_'):
+        # 主菜单按钮
+        if data == "buy_membership":
+            await self._show_buy_membership(query, user)
+            return
+        elif data == "my_info":
+            await self._show_my_info(query, user)
+            return
+        elif data == "tutorial":
+            await self._show_tutorial(query)
+            return
+        elif data == "view_stats":
+            await self._show_my_stats(query, user)
+            return
+        elif data == "admin_panel":
+            await self._show_admin_panel(query, user)
+            return
+        elif data == "back_to_menu":
+            await self._back_to_menu(query, user)
+            return
+
+        # 管理员面板按钮
+        elif data == "admin_users":
+            await self._admin_show_users(query, user)
+            return
+        elif data == "admin_authorize":
+            await self._admin_show_authorize(query)
+            return
+        elif data == "admin_groups":
+            await self._admin_show_groups(query, user)
+            return
+        elif data == "admin_stats":
+            await self._admin_show_stats(query, user)
+            return
+        elif data == "admin_payments":
+            await self._admin_show_payments(query, user)
+            return
+        elif data == "admin_settings":
+            await self._admin_show_settings(query)
+            return
+
+        # 购买会员套餐
+        elif data.startswith('buy_'):
             parts = data.split('_')
             days = int(parts[1])
             user_id = int(parts[2])
@@ -746,6 +848,397 @@ y0 - 英镑价格
                 f"💰 当前价格：{price}\n"
                 f"⏰ 更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
+
+    # ========== 按钮回调辅助函数 ==========
+
+    async def _show_buy_membership(self, query, user):
+        """显示购买会员界面"""
+        keyboard = [
+            [InlineKeyboardButton(
+                f"30天会员 - {config.MEMBERSHIP_PRICE_30_DAYS} USDT",
+                callback_data=f"buy_30_{user.id}"
+            )],
+            [InlineKeyboardButton(
+                f"90天会员 - {config.MEMBERSHIP_PRICE_90_DAYS} USDT",
+                callback_data=f"buy_90_{user.id}"
+            )],
+            [InlineKeyboardButton(
+                f"365天会员 - {config.MEMBERSHIP_PRICE_365_DAYS} USDT",
+                callback_data=f"buy_365_{user.id}"
+            )],
+            [InlineKeyboardButton("🔙 返回", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            "💎 选择会员套餐：\n\n"
+            "会员权益：\n"
+            "✅ 无限群组使用\n"
+            "✅ 完整记账功能\n"
+            "✅ 数据统计分析\n"
+            "✅ 优先技术支持\n\n"
+            "请选择购买时长：",
+            reply_markup=reply_markup
+        )
+
+    async def _show_my_info(self, query, user):
+        """显示我的信息"""
+        db_user = await db.get_user_by_telegram_id(user.id)
+
+        if db_user.membership_expires_at:
+            expires_str = db_user.membership_expires_at.strftime('%Y-%m-%d %H:%M:%S')
+            days_left = db_user.get_membership_days_left()
+            status = "✅ 有效" if db_user.is_member_active() else "❌ 已过期"
+        else:
+            expires_str = "未开通"
+            days_left = 0
+            status = "❌ 未开通"
+
+        keyboard = [[InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            f"👤 个人信息\n\n"
+            f"🆔 用户ID：{user.id}\n"
+            f"📛 用户名：@{user.username or '未设置'}\n"
+            f"💎 会员状态：{status}\n"
+            f"📅 到期时间：{expires_str}\n"
+            f"⏰ 剩余天数：{days_left}天\n"
+            f"👑 管理员：{'是' if db_user.is_admin else '否'}",
+            reply_markup=reply_markup
+        )
+
+    async def _show_tutorial(self, query):
+        """显示使用教程"""
+        keyboard = [[InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        tutorial_text = """
+📖 使用教程
+
+【记账功能】
+入款：+100、入款100、上行100
+出款：-100、出款100、下发100
+余额调整：余额+100、余额-100
+USDT记账：在金额后加u，如+100u
+支持小数：+100.5、-88.88
+
+【查询统计】
+发送"查"或"c"：
+• 入款总额及明细
+• 出款总额及明细
+• 余额调整记录
+• 当前余额
+• 手续费计算
+
+【群组设置】
+设置汇率 7.2
+设置费率 0.01（1%手续费）
+设置币种 JPY
+设置商户号 12345
+
+【USDT价格】
+z0 - 支付宝收款价
+w0 - 微信收款价
+b0/k0 - 银行卡收款价
+t0/e0/p0/y0 - 泰铢/欧元/比索/英镑
+
+【计算器】
+直接发送算式：100*7.2+50
+支持：+ - * / ^ ( )
+开启计算器 / 关闭计算器
+
+💡 更多帮助请访问Web后台
+"""
+        await query.edit_message_text(tutorial_text, reply_markup=reply_markup)
+
+    async def _show_my_stats(self, query, user):
+        """显示我的统计（需要在群组中使用）"""
+        keyboard = [[InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            "📊 查看统计\n\n"
+            "请在群组中发送"查"或"c"查看记账统计\n\n"
+            "或访问Web账单系统查看详细数据",
+            reply_markup=reply_markup
+        )
+
+    async def _show_admin_panel(self, query, user):
+        """显示管理员面板"""
+        db_user = await db.get_user_by_telegram_id(user.id)
+
+        if not db_user or not db_user.is_admin:
+            await query.answer("❌ 权限不足", show_alert=True)
+            return
+
+        keyboard = [
+            [
+                InlineKeyboardButton("👥 用户列表", callback_data="admin_users"),
+                InlineKeyboardButton("💎 授权会员", callback_data="admin_authorize")
+            ],
+            [
+                InlineKeyboardButton("🏢 群组列表", callback_data="admin_groups"),
+                InlineKeyboardButton("📊 统计数据", callback_data="admin_stats")
+            ],
+            [
+                InlineKeyboardButton("💰 支付记录", callback_data="admin_payments"),
+                InlineKeyboardButton("⚙️ 系统设置", callback_data="admin_settings")
+            ],
+            [InlineKeyboardButton("🔙 返回主菜单", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            "⚙️ 管理员控制面板\n\n"
+            "请选择要执行的操作：",
+            reply_markup=reply_markup
+        )
+
+    async def _back_to_menu(self, query, user):
+        """返回主菜单"""
+        db_user = await db.get_user_by_telegram_id(user.id)
+
+        is_member = db_user.is_member_active() or db_user.is_admin
+        days_left = db_user.get_membership_days_left()
+
+        keyboard = []
+
+        if is_member:
+            membership_status = f"✅ 会员有效 (剩余{days_left}天)" if days_left > 0 else "✅ 永久会员"
+        else:
+            membership_status = "❌ 未开通会员"
+
+        keyboard.append([
+            InlineKeyboardButton("💎 购买会员", callback_data="buy_membership"),
+            InlineKeyboardButton("👤 我的信息", callback_data="my_info")
+        ])
+
+        keyboard.append([
+            InlineKeyboardButton("📖 使用教程", callback_data="tutorial"),
+            InlineKeyboardButton("📊 查看统计", callback_data="view_stats")
+        ])
+
+        keyboard.append([
+            InlineKeyboardButton("🌐 Web账单查询", url=f"http://{config.WEBHOOK_HOST}:52000"),
+            InlineKeyboardButton("🎛️ 管理后台", url=f"http://{config.WEBHOOK_HOST}:38888")
+        ])
+
+        if db_user.is_admin:
+            keyboard.append([
+                InlineKeyboardButton("⚙️ 管理员面板", callback_data="admin_panel")
+            ])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        welcome_text = f"""
+🎉 欢迎使用智能记账机器人！
+
+👤 用户：{user.first_name} (@{user.username or user.id})
+💎 会员状态：{membership_status}
+
+📝 快速记账：
+• 入款：+100 或 入款100
+• 出款：-100 或 出款100
+• 余额：余额+100
+• USDT：+100u
+
+📊 查看统计：发送"查"或"c"
+
+💡 点击下方按钮探索更多功能
+"""
+        await query.edit_message_text(welcome_text, reply_markup=reply_markup)
+
+    # ========== 管理员面板辅助函数 ==========
+
+    async def _admin_show_users(self, query, user):
+        """显示用户列表（简略版）"""
+        db_user = await db.get_user_by_telegram_id(user.id)
+        if not db_user or not db_user.is_admin:
+            await query.answer("❌ 权限不足", show_alert=True)
+            return
+
+        async with db.async_session() as session:
+            from sqlalchemy.future import select
+            from sqlalchemy import func
+            from database import User
+
+            # 统计用户数
+            result = await session.execute(select(func.count(User.id)))
+            total_users = result.scalar()
+
+            # 统计活跃会员
+            now = datetime.now()
+            result = await session.execute(
+                select(func.count(User.id)).where(User.membership_expires_at > now)
+            )
+            active_members = result.scalar()
+
+        keyboard = [[InlineKeyboardButton("🔙 返回管理面板", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            f"👥 用户统计\n\n"
+            f"📊 总用户数：{total_users}\n"
+            f"💎 活跃会员：{active_members}\n\n"
+            f"💡 详细用户列表请访问Web后台：\n"
+            f"http://{config.WEBHOOK_HOST}:38888",
+            reply_markup=reply_markup
+        )
+
+    async def _admin_show_authorize(self, query):
+        """显示授权说明"""
+        keyboard = [[InlineKeyboardButton("🔙 返回管理面板", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            "💎 授权会员\n\n"
+            "使用命令格式：\n"
+            "/authorize @用户名 天数\n\n"
+            "示例：\n"
+            "/authorize @jdccc 30\n\n"
+            "或通过Web后台进行授权：\n"
+            f"http://{config.WEBHOOK_HOST}:38888",
+            reply_markup=reply_markup
+        )
+
+    async def _admin_show_groups(self, query, user):
+        """显示群组统计"""
+        db_user = await db.get_user_by_telegram_id(user.id)
+        if not db_user or not db_user.is_admin:
+            await query.answer("❌ 权限不足", show_alert=True)
+            return
+
+        async with db.async_session() as session:
+            from sqlalchemy.future import select
+            from sqlalchemy import func
+            from database import GroupChat, BookkeepingRecord
+
+            result = await session.execute(select(func.count(GroupChat.id)))
+            total_groups = result.scalar()
+
+            result = await session.execute(select(func.count(BookkeepingRecord.id)))
+            total_records = result.scalar()
+
+        keyboard = [[InlineKeyboardButton("🔙 返回管理面板", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            f"🏢 群组统计\n\n"
+            f"📊 总群组数：{total_groups}\n"
+            f"📝 总记账数：{total_records}\n\n"
+            f"💡 详细群组列表请访问Web后台",
+            reply_markup=reply_markup
+        )
+
+    async def _admin_show_stats(self, query, user):
+        """显示系统统计"""
+        db_user = await db.get_user_by_telegram_id(user.id)
+        if not db_user or not db_user.is_admin:
+            await query.answer("❌ 权限不足", show_alert=True)
+            return
+
+        async with db.async_session() as session:
+            from sqlalchemy.future import select
+            from sqlalchemy import func
+            from database import User, GroupChat, BookkeepingRecord, Payment
+
+            # 总用户数
+            result = await session.execute(select(func.count(User.id)))
+            total_users = result.scalar()
+
+            # 活跃会员
+            now = datetime.now()
+            result = await session.execute(
+                select(func.count(User.id)).where(User.membership_expires_at > now)
+            )
+            active_members = result.scalar()
+
+            # 总群组数
+            result = await session.execute(select(func.count(GroupChat.id)))
+            total_groups = result.scalar()
+
+            # 今日记账数
+            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            result = await session.execute(
+                select(func.count(BookkeepingRecord.id)).where(
+                    BookkeepingRecord.created_at >= today_start
+                )
+            )
+            today_records = result.scalar()
+
+            # 总支付订单
+            result = await session.execute(select(func.count(Payment.id)))
+            total_payments = result.scalar()
+
+        keyboard = [[InlineKeyboardButton("🔙 返回管理面板", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            f"📊 系统统计\n\n"
+            f"👥 总用户数：{total_users}\n"
+            f"💎 活跃会员：{active_members}\n"
+            f"🏢 总群组数：{total_groups}\n"
+            f"📝 今日记账：{today_records} 笔\n"
+            f"💰 总订单数：{total_payments}\n\n"
+            f"⏰ 统计时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            reply_markup=reply_markup
+        )
+
+    async def _admin_show_payments(self, query, user):
+        """显示支付记录"""
+        db_user = await db.get_user_by_telegram_id(user.id)
+        if not db_user or not db_user.is_admin:
+            await query.answer("❌ 权限不足", show_alert=True)
+            return
+
+        async with db.async_session() as session:
+            from sqlalchemy.future import select
+            from sqlalchemy import func
+            from database import Payment
+
+            result = await session.execute(select(func.count(Payment.id)))
+            total = result.scalar()
+
+            result = await session.execute(
+                select(func.count(Payment.id)).where(Payment.status == 'success')
+            )
+            success = result.scalar()
+
+            result = await session.execute(
+                select(func.count(Payment.id)).where(Payment.status == 'pending')
+            )
+            pending = result.scalar()
+
+        keyboard = [[InlineKeyboardButton("🔙 返回管理面板", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            f"💰 支付记录统计\n\n"
+            f"📊 总订单数：{total}\n"
+            f"✅ 成功支付：{success}\n"
+            f"⏳ 待支付：{pending}\n\n"
+            f"💡 详细支付记录请访问Web后台",
+            reply_markup=reply_markup
+        )
+
+    async def _admin_show_settings(self, query):
+        """显示系统设置"""
+        keyboard = [[InlineKeyboardButton("🔙 返回管理面板", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            f"⚙️ 系统设置\n\n"
+            f"💎 会员套餐价格：\n"
+            f"• 30天：{config.MEMBERSHIP_PRICE_30_DAYS} USDT\n"
+            f"• 90天：{config.MEMBERSHIP_PRICE_90_DAYS} USDT\n"
+            f"• 365天：{config.MEMBERSHIP_PRICE_365_DAYS} USDT\n\n"
+            f"🌐 Web服务：\n"
+            f"• 账单查询：端口 {config.WEB_BILL_PORT}\n"
+            f"• 管理后台：端口 {config.WEB_ADMIN_PORT}\n\n"
+            f"💡 修改价格请编辑 .env 文件",
+            reply_markup=reply_markup
+        )
 
     async def run(self):
         """运行机器人"""
