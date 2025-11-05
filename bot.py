@@ -1190,9 +1190,9 @@ t0/e0/p0/y0 - 泰铢/欧元/比索/英镑
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text(
-            "📊 查看统计\n\n"
-            "请在群组中发送"查"或"c"查看记账统计\n\n"
-            "或访问Web账单系统查看详细数据",
+            '📊 查看统计\n\n'
+            '请在群组中发送"查"或"c"查看记账统计\n\n'
+            '或访问Web账单系统查看详细数据',
             reply_markup=reply_markup
         )
 

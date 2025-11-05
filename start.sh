@@ -21,7 +21,14 @@ python3 --version
 # 安装依赖
 echo ""
 echo "📦 安装依赖..."
-pip3 install -r requirements.txt
+if command -v pip3 &> /dev/null; then
+    pip3 install -r requirements.txt -q
+elif command -v pip &> /dev/null; then
+    pip install -r requirements.txt -q
+else
+    echo "⚠️  警告：未找到 pip 或 pip3，跳过依赖安装"
+    echo "请手动运行：python3 -m pip install -r requirements.txt"
+fi
 
 echo ""
 echo "🚀 启动所有服务..."
