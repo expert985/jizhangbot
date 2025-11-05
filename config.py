@@ -37,3 +37,13 @@ SUPPORTED_CURRENCIES = [
 DEFAULT_CURRENCY = 'CNY'
 DEFAULT_EXCHANGE_RATE = 7.2
 DEFAULT_FEE_RATE = 0.01
+
+# Web Bill System Configuration
+WEB_BILL_PORT = int(os.getenv('WEB_BILL_PORT', 52000))
+WEB_BILL_HOST = os.getenv('WEB_BILL_HOST', '0.0.0.0')
+
+# Web Admin System Configuration
+WEB_ADMIN_PORT = int(os.getenv('WEB_ADMIN_PORT', 38888))
+WEB_ADMIN_HOST = os.getenv('WEB_ADMIN_HOST', '0.0.0.0')
+WEB_ADMIN_USERNAME = os.getenv('WEB_ADMIN_USERNAME', 'admin')
+WEB_ADMIN_PASSWORD = os.getenv('WEB_ADMIN_PASSWORD', '123456')
