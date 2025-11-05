@@ -86,6 +86,7 @@ class BookkeepingRecord(Base):
     amount = Column(Float, nullable=False)
     currency = Column(String(10), default='CNY')
     is_usdt = Column(Boolean, default=False)  # 是否为USDT记账
+    exchange_rate = Column(Float, nullable=True)  # 单笔交易汇率（可选，为空时使用群组默认汇率）
     description = Column(Text)
     message_id = Column(BigInteger)  # Telegram消息ID
     created_at = Column(DateTime, default=datetime.now, index=True)
@@ -281,7 +282,8 @@ class Database:
     # Bookkeeping operations
     async def add_record(self, group_id: int, user_id: int, record_type: str,
                         amount: float, currency: str = 'CNY', is_usdt: bool = False,
-                        description: str = None, message_id: int = None) -> BookkeepingRecord:
+                        exchange_rate: float = None, description: str = None,
+                        message_id: int = None) -> BookkeepingRecord:
         """添加记账记录"""
         async with self.async_session() as session:
             record = BookkeepingRecord(
@@ -291,6 +293,7 @@ class Database:
                 amount=amount,
                 currency=currency,
                 is_usdt=is_usdt,
+                exchange_rate=exchange_rate,
                 description=description,
                 message_id=message_id
             )

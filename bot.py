@@ -64,25 +64,25 @@ class BookkeepingBot:
             self.set_merchant_id
         ))
 
-        # 记账命令（入款、出款、余额调整）
+        # 记账命令（入款、出款、余额调整）- 支持可选汇率参数
         self.app.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex(r'^[+＋][\d.]+[uU]?$'),
+            filters.TEXT & filters.Regex(r'^[+＋][\d.]+[uU]?(\s+[\d.]+)?$'),
             self.add_income
         ))
         self.app.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex(r'^(入款|上行)\s*[\d.]+[uU]?$'),
+            filters.TEXT & filters.Regex(r'^(入款|上行)\s*[\d.]+[uU]?(\s+[\d.]+)?$'),
             self.add_income
         ))
         self.app.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex(r'^[-－][\d.]+[uU]?$'),
+            filters.TEXT & filters.Regex(r'^[-－][\d.]+[uU]?(\s+[\d.]+)?$'),
             self.add_expense
         ))
         self.app.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex(r'^(出款|下发)\s*[\d.]+[uU]?$'),
+            filters.TEXT & filters.Regex(r'^(出款|下发)\s*[\d.]+[uU]?(\s+[\d.]+)?$'),
             self.add_expense
         ))
         self.app.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex(r'^余额[+＋－-][\d.]+[uU]?$'),
+            filters.TEXT & filters.Regex(r'^余额[+＋－-][\d.]+[uU]?(\s+[\d.]+)?$'),
             self.adjust_balance
         ))
 
@@ -221,6 +221,12 @@ class BookkeepingBot:
 USDT记账：在金额后加u，如+100u
 支持小数：+100.5、-88.88
 
+💡 单笔自定义汇率：
++100 7.12 - 入款100，汇率7.12
+-200 7.15 - 出款200，汇率7.15
++100u 7.12 - 入款100 USDT，汇率7.12
+余额+50 7.2 - 余额增加50，汇率7.2
+
 【查询统计】
 发送"查"或"c"：
 • 入款总额及明细
@@ -230,7 +236,7 @@ USDT记账：在金额后加u，如+100u
 • 手续费计算
 
 【群组设置】
-设置汇率 7.2
+设置汇率 7.2（设置默认汇率）
 设置费率 0.01（1%手续费）
 设置币种 JPY
 设置商户号 12345
@@ -710,13 +716,17 @@ y0 - 英镑价格
 
         text = update.message.text
 
-        # 解析金额
-        match = re.search(r'[\d.]+', text)
-        if not match:
+        # 解析金额和可选汇率：+100 或 +100u 或 +100 7.12 或 +100u 7.12
+        # 查找所有数字
+        numbers = re.findall(r'[\d.]+', text)
+        if not numbers:
             return
 
-        amount = float(match.group())
-        is_usdt = text.lower().endswith('u')
+        amount = float(numbers[0])
+        exchange_rate = float(numbers[1]) if len(numbers) > 1 else None
+
+        # 检查是否是USDT（金额后紧跟u/U）
+        is_usdt = bool(re.search(r'[\d.]+[uU]', text))
 
         # 获取群组设置
         settings = await db.get_group_settings(group.id)
@@ -730,13 +740,18 @@ y0 - 英镑价格
             amount=amount,
             currency=currency,
             is_usdt=is_usdt,
+            exchange_rate=exchange_rate,
             message_id=update.message.message_id
         )
 
-        await update.message.reply_text(
-            f"✅ 入款记录已添加\n"
-            f"💰 金额：{amount} {currency}"
-        )
+        # 构建确认消息
+        confirm_msg = f"✅ 入款记录已添加\n💰 金额：{amount} {currency}"
+        if exchange_rate:
+            confirm_msg += f"\n💱 汇率：{exchange_rate}"
+        elif not is_usdt:
+            confirm_msg += f"\n💱 汇率：{settings.exchange_rate} (默认)"
+
+        await update.message.reply_text(confirm_msg)
 
     async def add_expense(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """添加出款记录"""
@@ -755,13 +770,16 @@ y0 - 英镑价格
 
         text = update.message.text
 
-        # 解析金额
-        match = re.search(r'[\d.]+', text)
-        if not match:
+        # 解析金额和可选汇率：-100 或 -100u 或 -100 7.15 或 -100u 7.15
+        numbers = re.findall(r'[\d.]+', text)
+        if not numbers:
             return
 
-        amount = float(match.group())
-        is_usdt = text.lower().endswith('u')
+        amount = float(numbers[0])
+        exchange_rate = float(numbers[1]) if len(numbers) > 1 else None
+
+        # 检查是否是USDT（金额后紧跟u/U）
+        is_usdt = bool(re.search(r'[\d.]+[uU]', text))
 
         # 获取群组设置
         settings = await db.get_group_settings(group.id)
@@ -775,13 +793,18 @@ y0 - 英镑价格
             amount=amount,
             currency=currency,
             is_usdt=is_usdt,
+            exchange_rate=exchange_rate,
             message_id=update.message.message_id
         )
 
-        await update.message.reply_text(
-            f"✅ 出款记录已添加\n"
-            f"💰 金额：{amount} {currency}"
-        )
+        # 构建确认消息
+        confirm_msg = f"✅ 出款记录已添加\n💰 金额：{amount} {currency}"
+        if exchange_rate:
+            confirm_msg += f"\n💱 汇率：{exchange_rate}"
+        elif not is_usdt:
+            confirm_msg += f"\n💱 汇率：{settings.exchange_rate} (默认)"
+
+        await update.message.reply_text(confirm_msg)
 
     async def adjust_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """调整余额"""
@@ -800,7 +823,7 @@ y0 - 英镑价格
 
         text = update.message.text
 
-        # 解析金额（带正负号）
+        # 解析金额（带正负号）和可选汇率：余额+100 或 余额+100u 或 余额+100 7.2
         match = re.search(r'[+＋－-][\d.]+', text)
         if not match:
             return
@@ -809,7 +832,13 @@ y0 - 英镑价格
         # 统一符号
         amount_str = amount_str.replace('＋', '+').replace('－', '-')
         amount = float(amount_str)
-        is_usdt = text.lower().endswith('u')
+
+        # 检查是否是USDT
+        is_usdt = bool(re.search(r'[\d.]+[uU]', text))
+
+        # 查找所有数字，第二个数字（如果存在）是汇率
+        numbers = re.findall(r'[\d.]+', text)
+        exchange_rate = float(numbers[1]) if len(numbers) > 1 else None
 
         # 获取群组设置
         settings = await db.get_group_settings(group.id)
@@ -823,14 +852,18 @@ y0 - 英镑价格
             amount=amount,
             currency=currency,
             is_usdt=is_usdt,
+            exchange_rate=exchange_rate,
             message_id=update.message.message_id
         )
 
         action = "增加" if amount > 0 else "减少"
-        await update.message.reply_text(
-            f"✅ 余额已{action}\n"
-            f"💰 金额：{amount:+.2f} {currency}"
-        )
+        confirm_msg = f"✅ 余额已{action}\n💰 金额：{amount:+.2f} {currency}"
+        if exchange_rate:
+            confirm_msg += f"\n💱 汇率：{exchange_rate}"
+        elif not is_usdt:
+            confirm_msg += f"\n💱 汇率：{settings.exchange_rate} (默认)"
+
+        await update.message.reply_text(confirm_msg)
 
     async def query_records(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """查询记账统计"""
@@ -871,12 +904,14 @@ y0 - 英镑价格
 
 ⚙️ 当前设置：
 • 币种：{settings.currency}
-• 汇率：{settings.exchange_rate}
+• 默认汇率：{settings.exchange_rate}
 • 费率：{settings.fee_rate*100}%
 """
 
         if settings.merchant_id:
             response += f"• 商户号：{settings.merchant_id}\n"
+
+        response += f"\n💡 单笔交易可使用自定义汇率（如：+100 7.12）"
 
         await update.message.reply_text(response)
 
@@ -1113,6 +1148,11 @@ y0 - 英镑价格
 USDT记账：在金额后加u，如+100u
 支持小数：+100.5、-88.88
 
+💡 单笔自定义汇率：
++100 7.12 - 入款100，汇率7.12
+-200 7.15 - 出款200，汇率7.15
++100u 7.12 - USDT入款，汇率7.12
+
 【查询统计】
 发送"查"或"c"：
 • 入款总额及明细
@@ -1122,7 +1162,7 @@ USDT记账：在金额后加u，如+100u
 • 手续费计算
 
 【群组设置】
-设置汇率 7.2
+设置汇率 7.2（设置默认汇率）
 设置费率 0.01（1%手续费）
 设置币种 JPY
 设置商户号 12345
